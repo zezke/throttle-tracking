@@ -101,11 +101,38 @@ The most honest number is how much longer the things you wait for take. Run them
 
 ```bash
 python3 timed.py --name build -- make -j8
-alias tbuild='python3 ~/throttle-tracking/timed.py --name build --'   # e.g. in ~/.zshrc
 ```
 
 Only successful runs while the logger was sampling count. Keep one kind of work per name
 (clean and incremental builds under different names), or the comparison is noise.
+
+### Wrapping projen in `~/.zshrc`
+
+To time a projen project without changing habits, define `pj` as a function in `~/.zshrc`
+(it replaces a plain `alias pj='npx projen'`, remove that first). CPU-bound tasks run through
+`timed.py` as `fiam:<task>`, everything else is plain `npx projen`:
+
+```zsh
+pj() {
+  case "$1" in
+    build|compile|test|synth|synth:silent|validate|eslint|bundle|frontend:build|default)
+      if [ $# -eq 1 ]; then
+        python3 ~/personal-projects/throttle-tracking/timed.py --name "fiam:$1" -- npx projen "$1"
+        return
+      fi ;;
+  esac
+  npx projen "$@"
+}
+```
+
+- Only timed without extra arguments, so `pj test -t foo` doesn't mix into the full-suite numbers.
+- Not timed: `deploy`, `cdk:deploy:*`, `diff`, `test:e2e`, `db:*` (they wait on AWS or the
+  database, not the CPU), `watch` / `test:watch` (never finish) and `build:cached` (sometimes
+  only a cache restore).
+- Adjust the `fiam:` prefix and the path to this repo to your setup; open a new shell (or
+  `source ~/.zshrc`) after editing.
+- The timings show up in the TIMED TASKS section of `python3 throttle_report.py` once a task
+  has both cool and throttled runs.
 
 ## Daily summary
 
