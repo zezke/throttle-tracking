@@ -6,6 +6,7 @@
   python3 throttle_report.py --csv episodes.csv  # also export the episode list
 """
 import argparse
+import bisect
 import collections
 import csv
 import datetime as dt
@@ -112,6 +113,47 @@ def top_procs(samples, n):
     return [(name, secs, secs / total * 100) for name, secs in tot.most_common(n)]
 
 
+def lost_time(samples):
+    """Upper bound on time lost: busy P-core time x the clock cut vs Nominal, split over the processes."""
+    nominal = [s["perf"]["peak_pct"] for s in samples if s["level"] == 0 and s["perf"]]
+    ref = statistics.median(nominal) if nominal else 100.0
+    lost, by_proc = 0.0, collections.Counter()
+    for s in samples:
+        if not (0 < s["level"] < 4 and s["perf"]):
+            continue
+        secs = s["interval"] * max(0.0, 1 - s["perf"]["peak_pct"] / ref)
+        lost += secs
+        cpu = sum(c for _, c in s["procs"])
+        for name, c in s["procs"]:
+            by_proc[name] += secs * c / cpu if cpu else 0
+    return ref, lost, by_proc
+
+
+def load_tasks(path, samples, since, until):
+    """Runs logged by timed.py, each with the share of its duration that was throttled (None = no samples)."""
+    if not os.path.exists(path):
+        return []
+    times = [s["ts"] for s in samples]
+    runs = []
+    with open(path, newline="") as f:
+        for row in csv.DictReader(f):
+            if (since and row["start"] < since) or (until and row["start"] >= until):
+                continue
+            start = dt.datetime.fromisoformat(row["start"])
+            end = start + dt.timedelta(seconds=float(row["duration_s"]))
+            # a sample covers the interval before its timestamp: keep those overlapping the run
+            window = []
+            for s in samples[bisect.bisect_right(times, start):]:
+                if s["ts"] - dt.timedelta(seconds=s["interval"]) >= end:
+                    break
+                window.append(s)
+            tot = sum(s["interval"] for s in window)
+            thr = sum(s["interval"] for s in window if 0 < s["level"] < 4)
+            runs.append({"name": row["name"], "duration": float(row["duration_s"]), "ok": row["exit_code"] == "0",
+                         "throttled": thr / tot if tot else None})
+    return runs
+
+
 def fmt_dur(seconds):
     seconds = int(seconds)
     h, rem = divmod(seconds, 3600)
@@ -166,6 +208,36 @@ def report(samples, top_max, episodes, args):
             pct(statistics.median(p["avg_pct"] for p in ps)),
             "%.1f" % (cpu / 1000) if cpu else "n/a"))
     print("  (peak reached = highest clock the cluster hit; a drop vs Nominal is the throttle)")
+
+    # --- lost time ---------------------------------------------------------
+    ref, lost, by_proc = lost_time(samples)
+    print()
+    print("LOST TIME: up to %s (%.1f%% of tracked time)" % (fmt_dur(lost), lost / total_s * 100))
+    print("  = busy P-core time while throttled x clock cut vs Nominal peak (%.0f%% of max)" % ref)
+    if lost:
+        print("  %-32s %10s %8s" % ("process", "lost", "share"))
+        for name, secs in by_proc.most_common(args.top):
+            print("  %-32s %10s %7.1f%%" % (name[:32], fmt_dur(secs), secs / lost * 100))
+    print("  (upper bound: memory-bound work slows less than the clock, and background work you")
+    print("   weren't waiting for counts too; loss is split by CPU share of the top processes)")
+
+    # --- timed tasks -------------------------------------------------------
+    runs = [r for r in load_tasks(args.tasks, samples, args.since, args.until) if r["ok"] and r["throttled"] is not None]
+    if runs:
+        print()
+        print("TIMED TASKS (timed.py; cool = <10% of the run throttled, hot = >=50%)")
+        print("  %-20s %5s %9s %5s %9s %8s %10s" % ("task", "cool", "median", "hot", "median", "slower", "lost"))
+        for name in sorted({r["name"] for r in runs}):
+            cool = [r["duration"] for r in runs if r["name"] == name and r["throttled"] < 0.1]
+            hot = [r["duration"] for r in runs if r["name"] == name and r["throttled"] >= 0.5]
+            if cool and hot:
+                c, h = statistics.median(cool), statistics.median(hot)
+                print("  %-20s %5d %8.1fs %5d %8.1fs %7.0f%% %10s" % (
+                    name[:20], len(cool), c, len(hot), h, (h / c - 1) * 100, fmt_dur(max(0, h - c) * len(hot))))
+            else:
+                print("  %-20s %5d %9s %5d %9s  (need cool and hot runs to compare)" % (
+                    name[:20], len(cool), "", len(hot), ""))
+        print("  (lost = hot runs x median difference; only successful runs while the logger was sampling)")
 
     # --- why ---------------------------------------------------------------
     print()
@@ -264,6 +336,8 @@ def main():
     ap.add_argument("--top", type=int, default=12, help="processes to list (default 12)")
     ap.add_argument("--episodes", type=int, default=15, help="episodes to list (default 15)")
     ap.add_argument("--csv", help="write all episodes to this CSV file")
+    ap.add_argument("--tasks", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "tasks.csv"),
+                    help="task timings written by timed.py")
     args = ap.parse_args()
 
     if not os.path.exists(args.db):

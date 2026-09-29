@@ -81,11 +81,31 @@ The report contains:
 - **HOW MUCH**: the highest clock the performance cores reached while busy, as a % of their
   maximum, split by pressure level. For example, Nominal 100% → Heavy 65% means a
   35% clock-speed cut.
+- **LOST TIME**: an upper bound on the time throttling cost: busy performance-core time
+  while throttled × the clock cut vs Nominal, split over the processes by CPU share. It's an
+  upper bound because memory-bound work slows down less than the clock, and background work
+  you weren't waiting for counts too.
+- **TIMED TASKS** (if you use `timed.py`, see below): median duration of each task when cool
+  vs when throttled, and the time lost across the throttled runs.
 - **WHY**: CPU-seconds per process during throttling, plus the 60 s before each
   episode, when the heat builds up. The *vs norm* column compares a process's share
   during throttling with its share the rest of the time. A high value or `new` points
   to the cause; steady background processes score around 1x or lower.
 - **Per day / by hour of day**, and a list of the longest episodes with their top 3 processes.
+
+## Timing real tasks
+
+The most honest number is how much longer the things you wait for take. Run them through
+`timed.py` (no sudo needed); it logs start time and duration to `data/tasks.csv`, and the
+report compares runs that were cool (<10% throttled) with hot ones (≥50%):
+
+```bash
+python3 timed.py --name build -- make -j8
+alias tbuild='python3 ~/throttle-tracking/timed.py --name build --'   # e.g. in ~/.zshrc
+```
+
+Only successful runs while the logger was sampling count. Keep one kind of work per name
+(clean and incremental builds under different names), or the comparison is noise.
 
 ## Daily summary
 
@@ -104,16 +124,6 @@ Nominal and while throttled).
 usually many short-lived ones (compilers, shells, `xcrun`) spawned by builds or scripts.
 
 `python3 temps.py` prints all temperature sensors right now.
-
-## Performance loss query
-
-```bash
-sqlite3 -header -column data/throttle.db < queries/performance_loss.sql
-```
-
-For each CPU cluster and pressure level: minutes spent busy, the average clock-speed loss
-compared with busy Nominal samples, and that loss expressed as "lost minutes" of full-speed
-work.
 
 ## Stop / remove
 
