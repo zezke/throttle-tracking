@@ -39,9 +39,12 @@ def main():
     # temperature columns only exist once the updated logger has started
     has_temps = "temp_avg_c" in {r[1] for r in db.execute("PRAGMA table_info(samples)")}
     temp_cols = "temp_avg_c, temp_max_c" if has_temps else "NULL, NULL"
+    # skip samples taken while the screen was locked or asleep (NULL = unknown, keep)
+    has_screen = "screen_active" in {r[1] for r in db.execute("PRAGMA table_info(samples)")}
+    active = " AND coalesce(s.screen_active, 1) = 1" if has_screen else ""
     samples = db.execute(
         "SELECT id, ts, coalesce(interval_s, 10), coalesce(pressure_level, 0), " + temp_cols +
-        " FROM samples WHERE ts >= ? AND ts < ? ORDER BY ts", (lo, hi)).fetchall()
+        " FROM samples s WHERE ts >= ? AND ts < ?" + active + " ORDER BY ts", (lo, hi)).fetchall()
     print("DAILY SUMMARY  %s" % day.strftime("%A %Y-%m-%d"))
     print("=" * 60)
     if not samples:
@@ -70,10 +73,10 @@ def main():
         "       sum(CASE WHEN s.pressure_level BETWEEN 1 AND 3"
         "                THEN p.cpu_ms_per_s * coalesce(s.interval_s, 10) ELSE 0 END) / 1000.0"
         " FROM processes p JOIN samples s ON s.id = p.sample_id"
-        " WHERE s.ts >= ? AND s.ts < ? GROUP BY p.name ORDER BY 2 DESC LIMIT ?", (lo, hi, args.top)).fetchall()
+        " WHERE s.ts >= ? AND s.ts < ?" + active + " GROUP BY p.name ORDER BY 2 DESC LIMIT ?", (lo, hi, args.top)).fetchall()
     all_cpu = db.execute(
         "SELECT sum(p.cpu_ms_per_s * coalesce(s.interval_s, 10)) / 1000.0"
-        " FROM processes p JOIN samples s ON s.id = p.sample_id WHERE s.ts >= ? AND s.ts < ?", (lo, hi)).fetchone()[0] or 1
+        " FROM processes p JOIN samples s ON s.id = p.sample_id WHERE s.ts >= ? AND s.ts < ?" + active, (lo, hi)).fetchone()[0] or 1
     print("  %-30s %9s %7s %10s %16s" % ("process", "CPU time", "share", "avg cores", "while throttled"))
     for name, cpu_s, thr_s in rows:
         print("  %-30s %9s %6.1f%% %10.2f %16s" % (
@@ -108,7 +111,7 @@ def main():
         "       avg(CASE WHEN s.pressure_level = 0 THEN c.avg_active_mhz END),"
         "       avg(CASE WHEN s.pressure_level BETWEEN 1 AND 3 THEN c.avg_active_mhz END)"
         " FROM clusters c JOIN samples s ON s.id = c.sample_id"
-        " WHERE s.ts >= ? AND s.ts < ? AND c.avg_active_mhz IS NOT NULL"
+        " WHERE s.ts >= ? AND s.ts < ? AND c.avg_active_mhz IS NOT NULL" + active +
         " GROUP BY c.name ORDER BY c.name", (lo, hi)).fetchall()
     if not rows:
         print("  No frequency data for this day.")

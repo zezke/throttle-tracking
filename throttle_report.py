@@ -20,6 +20,9 @@ LEAD_IN_S = 60  # CPU time in the minute before an episode also counts towards i
 
 def load(db, since, until):
     q = "SELECT id, ts, interval_s, pressure_level, cpu_power_mw, gpu_power_mw, on_ac FROM samples WHERE 1=1"
+    # skip samples taken while the screen was locked or asleep (column added later; NULL = unknown, keep)
+    if "screen_active" in {r[1] for r in db.execute("PRAGMA table_info(samples)")}:
+        q += " AND coalesce(screen_active, 1) = 1"
     params = []
     if since:
         q += " AND ts >= ?"

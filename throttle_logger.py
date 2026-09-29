@@ -45,7 +45,8 @@ CREATE TABLE IF NOT EXISTS samples (
     package_power_mw REAL,
     on_ac INTEGER,
     temp_avg_c REAL,                -- average of the on-die sensors
-    temp_max_c REAL                 -- hottest on-die sensor
+    temp_max_c REAL,                -- hottest on-die sensor
+    screen_active INTEGER           -- 0 = locked or all displays asleep, NULL = unknown
 );
 CREATE TABLE IF NOT EXISTS clusters (
     sample_id INTEGER NOT NULL REFERENCES samples(id),
@@ -139,6 +140,29 @@ def on_ac_power():
         return None
 
 
+def _ioreg(*args):
+    return plistlib.loads(subprocess.run(["ioreg", "-a", *args], capture_output=True, timeout=5).stdout)
+
+
+def screen_state():
+    """(locked, displays_asleep) read from IOKit; works from a root daemon outside the GUI session."""
+    users = _ioreg("-n", "Root", "-d1").get("IOConsoleUsers") or []
+    locked = any(u.get("CGSSessionScreenIsLocked") for u in users)
+    fbs = _ioreg("-r", "-c", "IOMobileFramebuffer", "-d1") or []
+    states = [(fb.get("IOPowerManagement") or {}).get("CurrentPowerState") for fb in fbs]
+    asleep = bool(states) and all(st == 0 for st in states)
+    return locked, asleep
+
+
+def screen_active():
+    try:
+        locked, asleep = screen_state()
+        return 0 if locked or asleep else 1
+    except Exception as e:
+        log("screen check failed: %r" % e)
+        return None
+
+
 def powermetrics_stream(interval_ms):
     """Yield parsed plist dicts from a running powermetrics process."""
     cmd = [
@@ -214,9 +238,9 @@ def open_db(path):
     db.executescript(SCHEMA)
     # databases created before temperatures were logged
     cols = {r[1] for r in db.execute("PRAGMA table_info(samples)")}
-    for col in ("temp_avg_c", "temp_max_c"):
+    for col, typ in (("temp_avg_c", "REAL"), ("temp_max_c", "REAL"), ("screen_active", "INTEGER")):
         if col not in cols:
-            db.execute("ALTER TABLE samples ADD COLUMN %s REAL" % col)
+            db.execute("ALTER TABLE samples ADD COLUMN %s %s" % (col, typ))
     db.commit()
     return db
 
@@ -233,12 +257,12 @@ def tracking_end(db, days):
     return end
 
 
-def store(db, s, on_ac, temp_avg, temp_max):
+def store(db, s, on_ac, active, temp_avg, temp_max):
     cur = db.execute(
         "INSERT INTO samples (ts, interval_s, pressure, pressure_level, cpu_power_mw, gpu_power_mw,"
-        " package_power_mw, on_ac, temp_avg_c, temp_max_c) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        " package_power_mw, on_ac, screen_active, temp_avg_c, temp_max_c) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
         (s["ts"], s["interval_s"], s["pressure"], s["pressure_level"], s["cpu_power_mw"],
-         s["gpu_power_mw"], s["package_power_mw"], on_ac, temp_avg, temp_max))
+         s["gpu_power_mw"], s["package_power_mw"], on_ac, active, temp_avg, temp_max))
     sid = cur.lastrowid
     db.executemany(
         "INSERT INTO clusters VALUES (?,?,?,?,?,?)",
@@ -261,6 +285,7 @@ def probe(args):
         print()
         print("Thermal pressure:", s["pressure"])
         print("CPU / GPU / package power (mW):", s["cpu_power_mw"], s["gpu_power_mw"], s["package_power_mw"])
+        print("Screen locked / displays asleep:", *screen_state())
         print("Die temperature avg / max (°C):", *[_r(t, 1) for t in temps.die_temps()])
         for c in s["clusters"]:
             print("  cluster %-12s busy=%s avg=%s peak=%s max=%s MHz" % (
@@ -289,6 +314,7 @@ def run(args):
         raise KeyboardInterrupt
 
     signal.signal(signal.SIGTERM, handle_term)
+    last_active = 1
 
     try:
         while not stopping["flag"]:
@@ -305,7 +331,11 @@ def run(args):
                 if now >= stop_at or not in_work_hours(now, days, start, end):
                     break
                 try:
-                    store(db, parse_sample(raw, args.top), on_ac_power(), *temps.die_temps())
+                    active = screen_active()
+                    if active != last_active:
+                        log("screen %s" % {0: "locked/asleep: flagging samples", 1: "active", None: "state unknown"}[active])
+                        last_active = active
+                    store(db, parse_sample(raw, args.top), on_ac_power(), active, *temps.die_temps())
                 except Exception as e:
                     log("failed to store sample: %s" % e)
             else:

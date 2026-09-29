@@ -33,6 +33,9 @@ SQLite (`data/throttle.db`):
 | Top 5 processes by CPU time | `tasks` sampler | *why* |
 | Chip temperature: average and hottest on-die sensor | IOKit HID sensors (`temps.py`) | context |
 
+Samples taken while the screen is locked or every display is asleep are flagged
+(`screen_active = 0`) and left out of all reports, so idle time doesn't dilute the results.
+
 It only records inside work hours (default Mon–Fri 09:00–18:00). The period ends
 14 days after the first start, even if the Mac reboots in between; after that the
 logger exits and stops.
@@ -56,6 +59,12 @@ tail -f data/logger.log
 
 Keep [MacThrottle](https://github.com/angristan/MacThrottle) running if you like; the two
 don't interfere.
+
+## Live view
+
+```bash
+python3 live.py     # one line per sample as it's logged, Ctrl-C to stop
+```
 
 ## Report (any time, no sudo needed)
 
