@@ -4,24 +4,23 @@
   python3 timed.py --name build -- make -j8
   alias tbuild='python3 ~/throttle-tracking/timed.py --name build --'
 
-Appends start time, duration, name and exit code to data/tasks.csv (no sudo needed).
-The thermal pressure during the run is looked up later from the logger's samples.
+Stores start time, duration, name and exit code in the tasks table of data/throttle.db
+(no sudo needed). The thermal pressure during the run is looked up later from the logger's samples.
 """
 import argparse
-import csv
 import datetime as dt
 import os
 import subprocess
 import sys
 import time
 
-TASKS_CSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "tasks.csv")
+import throttle_logger
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--name", help="label to group runs by (default: the command's first word)")
-    ap.add_argument("--csv", default=TASKS_CSV)
+    ap.add_argument("--db", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "throttle.db"))
     ap.add_argument("cmd", nargs=argparse.REMAINDER, help="command to run (after --)")
     args = ap.parse_args()
     cmd = args.cmd[1:] if args.cmd[:1] == ["--"] else args.cmd
@@ -36,14 +35,17 @@ def main():
         code = 130
     duration = time.monotonic() - t0
 
-    new = not os.path.exists(args.csv)
-    os.makedirs(os.path.dirname(os.path.abspath(args.csv)), exist_ok=True)
-    with open(args.csv, "a", newline="") as f:
-        w = csv.writer(f)
-        if new:
-            w.writerow(["start", "duration_s", "name", "exit_code"])
-        w.writerow([start.isoformat(timespec="seconds"), round(duration, 2),
-                    args.name or os.path.basename(cmd[0]), code])
+    try:
+        db = throttle_logger.open_db(args.db)
+        db.execute("INSERT INTO tasks (start, duration_s, name, exit_code) VALUES (?,?,?,?)",
+                   (start.isoformat(timespec="seconds"), round(duration, 2), args.name or os.path.basename(cmd[0]), code))
+        db.commit()
+    except Exception as e:
+        # never fail the wrapped command over bookkeeping
+        print("timed.py: could not record the run in %s: %s" % (args.db, e), file=sys.stderr)
+        if not os.access(args.db, os.W_OK):
+            print("timed.py: the db isn't writable by you; restart the logger so it hands the db over:\n"
+                  "  sudo launchctl kickstart -k system/local.throttle-logger", file=sys.stderr)
     return code
 
 

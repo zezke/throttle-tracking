@@ -96,8 +96,8 @@ The report contains:
 ## Timing real tasks
 
 The most honest number is how much longer the things you wait for take. Run them through
-`timed.py` (no sudo needed); it logs start time and duration to `data/tasks.csv`, and the
-report compares runs that were cool (<10% throttled) with hot ones (≥50%):
+`timed.py` (no sudo needed); it stores start time and duration in the `tasks` table of
+`data/throttle.db`, and the report compares runs that were cool (<10% throttled) with hot ones (≥50%):
 
 ```bash
 python3 timed.py --name build -- make -j8

@@ -129,28 +129,27 @@ def lost_time(samples):
     return ref, lost, by_proc
 
 
-def load_tasks(path, samples, since, until):
+def load_tasks(db, samples, since, until):
     """Runs logged by timed.py, each with the share of its duration that was throttled (None = no samples)."""
-    if not os.path.exists(path):
-        return []
+    if not db.execute("SELECT 1 FROM sqlite_master WHERE name = 'tasks'").fetchone():
+        return []  # logger not restarted since the tasks table was added
     times = [s["ts"] for s in samples]
     runs = []
-    with open(path, newline="") as f:
-        for row in csv.DictReader(f):
-            if (since and row["start"] < since) or (until and row["start"] >= until):
-                continue
-            start = dt.datetime.fromisoformat(row["start"])
-            end = start + dt.timedelta(seconds=float(row["duration_s"]))
-            # a sample covers the interval before its timestamp: keep those overlapping the run
-            window = []
-            for s in samples[bisect.bisect_right(times, start):]:
-                if s["ts"] - dt.timedelta(seconds=s["interval"]) >= end:
-                    break
-                window.append(s)
-            tot = sum(s["interval"] for s in window)
-            thr = sum(s["interval"] for s in window if 0 < s["level"] < 4)
-            runs.append({"name": row["name"], "duration": float(row["duration_s"]), "ok": row["exit_code"] == "0",
-                         "throttled": thr / tot if tot else None})
+    for row_start, duration, name, code in db.execute("SELECT start, duration_s, name, exit_code FROM tasks ORDER BY start"):
+        if (since and row_start < since) or (until and row_start >= until):
+            continue
+        start = dt.datetime.fromisoformat(row_start)
+        end = start + dt.timedelta(seconds=duration)
+        # a sample covers the interval before its timestamp: keep those overlapping the run
+        window = []
+        for s in samples[bisect.bisect_right(times, start):]:
+            if s["ts"] - dt.timedelta(seconds=s["interval"]) >= end:
+                break
+            window.append(s)
+        tot = sum(s["interval"] for s in window)
+        thr = sum(s["interval"] for s in window if 0 < s["level"] < 4)
+        runs.append({"name": name, "duration": duration, "ok": code == 0,
+                     "throttled": thr / tot if tot else None})
     return runs
 
 
@@ -165,7 +164,7 @@ def pct(v):
     return "  n/a" if v is None else "%4.0f%%" % v
 
 
-def report(samples, top_max, episodes, args):
+def report(samples, top_max, episodes, tasks, args):
     if not samples:
         print("No samples recorded yet.")
         return
@@ -222,7 +221,7 @@ def report(samples, top_max, episodes, args):
     print("   weren't waiting for counts too; loss is split by CPU share of the top processes)")
 
     # --- timed tasks -------------------------------------------------------
-    runs = [r for r in load_tasks(args.tasks, samples, args.since, args.until) if r["ok"] and r["throttled"] is not None]
+    runs = [r for r in tasks if r["ok"] and r["throttled"] is not None]
     if runs:
         print()
         print("TIMED TASKS (timed.py; cool = <10% of the run throttled, hot = >=50%)")
@@ -336,8 +335,6 @@ def main():
     ap.add_argument("--top", type=int, default=12, help="processes to list (default 12)")
     ap.add_argument("--episodes", type=int, default=15, help="episodes to list (default 15)")
     ap.add_argument("--csv", help="write all episodes to this CSV file")
-    ap.add_argument("--tasks", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "tasks.csv"),
-                    help="task timings written by timed.py")
     args = ap.parse_args()
 
     if not os.path.exists(args.db):
@@ -345,7 +342,7 @@ def main():
     db = sqlite3.connect("file:%s?mode=ro" % args.db, uri=True)
     samples, top_max = load(db, args.since, args.until)
     episodes = find_episodes(samples)
-    report(samples, top_max, episodes, args)
+    report(samples, top_max, episodes, load_tasks(db, samples, args.since, args.until), args)
     if args.csv:
         write_csv(args.csv, episodes)
 

@@ -64,6 +64,13 @@ CREATE TABLE IF NOT EXISTS processes (
     cpu_ms_per_s REAL,              -- 1000 = one full core
     energy_impact REAL
 );
+CREATE TABLE IF NOT EXISTS tasks (   -- written by timed.py
+    id INTEGER PRIMARY KEY,
+    start TEXT NOT NULL,            -- local ISO timestamp
+    duration_s REAL,
+    name TEXT,
+    exit_code INTEGER
+);
 CREATE INDEX IF NOT EXISTS idx_samples_ts ON samples(ts);
 CREATE INDEX IF NOT EXISTS idx_clusters_sample ON clusters(sample_id);
 CREATE INDEX IF NOT EXISTS idx_processes_sample ON processes(sample_id);
@@ -233,9 +240,14 @@ def seconds_until_work(now, days, start, end):
 
 
 def open_db(path):
-    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    data_dir = os.path.dirname(os.path.abspath(path))
+    os.makedirs(data_dir, exist_ok=True)
     db = sqlite3.connect(path)
     db.executescript(SCHEMA)
+    if os.geteuid() == 0:
+        # hand the db to the owner of data/ (set by install.sh) so timed.py can write to it without sudo
+        st = os.stat(data_dir)
+        os.chown(path, st.st_uid, st.st_gid)
     # databases created before temperatures were logged
     cols = {r[1] for r in db.execute("PRAGMA table_info(samples)")}
     for col, typ in (("temp_avg_c", "REAL"), ("temp_max_c", "REAL"), ("screen_active", "INTEGER")):
