@@ -115,7 +115,7 @@ To time a projen project without changing habits, define `pj` as a function in `
 ```zsh
 pj() {
   case "$1" in
-    build|compile|test|synth|synth:silent|validate|eslint|bundle|frontend:build|default)
+    build|test|synth|synth:silent|validate|eslint|bundle|frontend:build|default)
       if [ $# -eq 1 ]; then
         python3 ~/personal-projects/throttle-tracking/timed.py --name "fiam:$1" -- npx projen "$1"
         return
@@ -127,8 +127,9 @@ pj() {
 
 - Only timed without extra arguments, so `pj test -t foo` doesn't mix into the full-suite numbers.
 - Not timed: `deploy`, `cdk:deploy:*`, `diff`, `test:e2e`, `db:*` (they wait on AWS or the
-  database, not the CPU), `watch` / `test:watch` (never finish) and `build:cached` (sometimes
-  only a cache restore).
+  database, not the CPU), `watch` / `test:watch` (never finish), `build:cached` (sometimes
+  only a cache restore) and `compile` (no steps of its own in a projen CDK app; the work is in
+  `post-compile` → `synth:silent`).
 - Adjust the `fiam:` prefix and the path to this repo to your setup; open a new shell (or
   `source ~/.zshrc`) after editing.
 - The timings show up in the TIMED TASKS section of `python3 throttle_report.py` once a task
