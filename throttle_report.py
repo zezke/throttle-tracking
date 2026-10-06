@@ -17,6 +17,7 @@ import sys
 
 LEVEL_NAMES = {0: "Nominal", 1: "Moderate", 2: "Heavy", 3: "Trapping", 4: "Sleeping"}
 LEAD_IN_S = 60  # CPU time in the minute before an episode also counts towards its cause
+MIN_RUNS = 3    # cool and hot runs a timed task needs before its medians are compared
 
 
 def load(db, since, until):
@@ -229,13 +230,13 @@ def report(samples, top_max, episodes, tasks, args):
         for name in sorted({r["name"] for r in runs}):
             cool = [r["duration"] for r in runs if r["name"] == name and r["throttled"] < 0.1]
             hot = [r["duration"] for r in runs if r["name"] == name and r["throttled"] >= 0.5]
-            if cool and hot:
+            if len(cool) >= MIN_RUNS and len(hot) >= MIN_RUNS:
                 c, h = statistics.median(cool), statistics.median(hot)
                 print("  %-20s %5d %8.1fs %5d %8.1fs %7.0f%% %10s" % (
                     name[:20], len(cool), c, len(hot), h, (h / c - 1) * 100, fmt_dur(max(0, h - c) * len(hot))))
             else:
-                print("  %-20s %5d %9s %5d %9s  (need cool and hot runs to compare)" % (
-                    name[:20], len(cool), "", len(hot), ""))
+                print("  %-20s %5d %9s %5d %9s  (need %d cool and %d hot runs to compare)" % (
+                    name[:20], len(cool), "", len(hot), "", MIN_RUNS, MIN_RUNS))
         print("  (lost = hot runs x median difference; only successful runs while the logger was sampling)")
 
     # --- why ---------------------------------------------------------------

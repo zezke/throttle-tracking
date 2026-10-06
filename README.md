@@ -86,7 +86,8 @@ The report contains:
   upper bound because memory-bound work slows down less than the clock, and background work
   you weren't waiting for counts too.
 - **TIMED TASKS** (if you use `timed.py`, see below): median duration of each task when cool
-  vs when throttled, and the time lost across the throttled runs.
+  vs when throttled, and the time lost across the throttled runs. A task needs at least 3 cool
+  and 3 hot runs before it's compared; fewer give misleading percentages.
 - **WHY**: CPU-seconds per process during throttling, plus the 60 s before each
   episode, when the heat builds up. The *vs norm* column compares a process's share
   during throttling with its share the rest of the time. A high value or `new` points

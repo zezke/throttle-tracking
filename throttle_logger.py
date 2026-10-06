@@ -18,6 +18,8 @@ Usage:
   sudo python3 throttle_logger.py --db data/throttle.db   # run (normally via launchd)
 """
 import argparse
+import ctypes
+import ctypes.util
 import datetime as dt
 import os
 import plistlib
@@ -151,9 +153,51 @@ def _ioreg(*args):
     return plistlib.loads(subprocess.run(["ioreg", "-a", *args], capture_output=True, timeout=5).stdout)
 
 
+_cf = _io = None
+
+
+def _console_users():
+    """IOConsoleUsers of the registry root, read via IOKit directly.
+
+    `ioreg -n Root` dumps ~180 KB to get this one property and timed out under load."""
+    global _cf, _io
+    v = ctypes.c_void_p
+    if _cf is None:
+        _cf = ctypes.CDLL(ctypes.util.find_library("CoreFoundation"))
+        _io = ctypes.CDLL(ctypes.util.find_library("IOKit"))
+        _cf.CFStringCreateWithCString.restype = v
+        _cf.CFStringCreateWithCString.argtypes = [v, ctypes.c_char_p, ctypes.c_uint32]
+        _cf.CFPropertyListCreateData.restype = v
+        _cf.CFPropertyListCreateData.argtypes = [v, v, ctypes.c_long, ctypes.c_ulong, v]
+        _cf.CFDataGetLength.restype = ctypes.c_long
+        _cf.CFDataGetLength.argtypes = [v]
+        _cf.CFDataGetBytePtr.restype = v
+        _cf.CFDataGetBytePtr.argtypes = [v]
+        _cf.CFRelease.argtypes = [v]
+        _io.IORegistryGetRootEntry.restype = ctypes.c_uint32
+        _io.IORegistryGetRootEntry.argtypes = [ctypes.c_uint32]
+        _io.IORegistryEntryCreateCFProperty.restype = v
+        _io.IORegistryEntryCreateCFProperty.argtypes = [ctypes.c_uint32, v, v, ctypes.c_uint32]
+        _io.IOObjectRelease.argtypes = [ctypes.c_uint32]
+    root = _io.IORegistryGetRootEntry(0)  # 0 = kIOMainPortDefault
+    key = _cf.CFStringCreateWithCString(None, b"IOConsoleUsers", 0x08000100)  # UTF-8
+    prop = _io.IORegistryEntryCreateCFProperty(root, key, None, 0)
+    _cf.CFRelease(key)
+    _io.IOObjectRelease(root)
+    if not prop:
+        return []
+    # serialise to an XML plist and parse that, rather than walking CF types by hand
+    data = _cf.CFPropertyListCreateData(None, prop, 100, 0, None)  # 100 = kCFPropertyListXMLFormat_v1_0
+    _cf.CFRelease(prop)
+    try:
+        return plistlib.loads(ctypes.string_at(_cf.CFDataGetBytePtr(data), _cf.CFDataGetLength(data)))
+    finally:
+        _cf.CFRelease(data)
+
+
 def screen_state():
     """(locked, displays_asleep) read from IOKit; works from a root daemon outside the GUI session."""
-    users = _ioreg("-n", "Root", "-d1").get("IOConsoleUsers") or []
+    users = _console_users()
     locked = any(u.get("CGSSessionScreenIsLocked") for u in users)
     fbs = _ioreg("-r", "-c", "IOMobileFramebuffer", "-d1") or []
     states = [(fb.get("IOPowerManagement") or {}).get("CurrentPowerState") for fb in fbs]
