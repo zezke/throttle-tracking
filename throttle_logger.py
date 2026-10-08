@@ -272,15 +272,16 @@ def in_work_hours(now, days, start, end):
 
 
 def seconds_until_work(now, days, start, end):
-    """Seconds until the next work period starts (capped so we re-check regularly)."""
+    """Seconds until the next work period starts, capped at a minute: time.sleep doesn't count
+    time the Mac spends asleep, so a long sleep overnight would start sampling late."""
     for add in range(0, 8):
         day = (now + dt.timedelta(days=add)).date()
         if day.weekday() not in days:
             continue
         begin = dt.datetime.combine(day, start)
         if begin > now:
-            return min((begin - now).total_seconds(), 3600)
-    return 3600
+            return min((begin - now).total_seconds(), 60)
+    return 60
 
 
 def open_db(path):
